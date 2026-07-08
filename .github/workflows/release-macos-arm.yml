@@ -1,0 +1,163 @@
+name: Release macOS ARM
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "发布标签，例如 v0.1.0；留空时使用 package.json 的 version。"
+        required: false
+        type: string
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-macos-arm-${{ github.ref_name }}-${{ inputs.tag }}
+  cancel-in-progress: false
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: 1
+
+jobs:
+  build-and-release:
+    name: Build and publish macOS ARM
+    runs-on: macos-15
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+
+      - name: Enable pnpm
+        shell: bash
+        run: |
+          set -euo pipefail
+          corepack enable
+          corepack prepare pnpm@11.7.0 --activate
+          pnpm --version
+
+      - name: Resolve release version
+        id: version
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          input_tag="${{ inputs.tag }}"
+          if [ "${{ github.ref_type }}" = "tag" ]; then
+            raw_tag="${{ github.ref_name }}"
+          elif [ -n "$input_tag" ]; then
+            raw_tag="$input_tag"
+          else
+            raw_tag="v$(node -p "require('./package.json').version")"
+          fi
+
+          version="${raw_tag#v}"
+          tag="v${version}"
+
+          if ! [[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+([-.][0-9A-Za-z.-]+)?$ ]]; then
+            echo "::error::版本号格式不合法：$version"
+            exit 1
+          fi
+
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-darwin
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Build macOS ARM DMG
+        shell: bash
+        run: |
+          set -euo pipefail
+          pnpm exec tauri build --target aarch64-apple-darwin --bundles dmg
+
+      - name: Prepare release assets
+        id: assets
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          version="${{ steps.version.outputs.version }}"
+          mkdir -p release-assets
+
+          dmg_path="$(find src-tauri/target -path "*/release/bundle/dmg/*.dmg" -type f -print -quit)"
+          if [ -z "$dmg_path" ]; then
+            echo "::error::未找到 macOS ARM DMG 产物。"
+            find src-tauri/target -maxdepth 6 -type f | sort
+            exit 1
+          fi
+
+          asset_name="mzRead_${version}_macos_arm64.dmg"
+          cp "$dmg_path" "release-assets/$asset_name"
+          shasum -a 256 "release-assets/$asset_name" > "release-assets/$asset_name.sha256"
+
+          checksum="$(awk '{print $1}' "release-assets/$asset_name.sha256")"
+          echo "asset_name=$asset_name" >> "$GITHUB_OUTPUT"
+          echo "checksum=$checksum" >> "$GITHUB_OUTPUT"
+
+      - name: Generate release notes
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          cat > release-notes.md <<EOF_NOTES
+          ## mzRead ${{ steps.version.outputs.tag }}
+
+          mzRead 是一个面向 macOS 的轻量本地 Markdown 阅读器。本版本仅发布 macOS Apple Silicon（ARM64）安装包。
+
+          ### 首版功能
+
+          - 打开 \`.md\`、\`.markdown\`、\`.mdown\`、\`.mkd\` 本地 Markdown 文件
+          - 使用 Tailwind CSS Typography 提供舒适阅读排版
+          - 自动生成文档大纲，支持标题定位与当前章节高亮
+          - 支持代码块快捷复制
+          - 使用 DOMPurify 清理 Markdown 渲染后的 HTML
+          - 支持浅色 / 深色主题切换
+          - 支持最近文件记录、系统托盘快速访问与 macOS 文件关联
+
+          ### 下载
+
+          - macOS Apple Silicon：\`${{ steps.assets.outputs.asset_name }}\`
+          - SHA256：\`${{ steps.assets.outputs.checksum }}\`
+
+          > 说明：当前应用未做 Apple Developer ID 签名与公证。如 macOS 首次打开时提示安全限制，可在系统设置的“隐私与安全性”中允许打开。
+          EOF_NOTES
+
+          sed -i '' 's/^          //' release-notes.md
+
+      - name: Publish GitHub Release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ steps.version.outputs.tag }}
+        run: |
+          set -euo pipefail
+
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            gh release edit "$TAG" \
+              --title "mzRead $TAG" \
+              --notes-file release-notes.md \
+              --latest
+            gh release upload "$TAG" release-assets/* --clobber
+          else
+            gh release create "$TAG" release-assets/* \
+              --title "mzRead $TAG" \
+              --notes-file release-notes.md \
+              --target "$GITHUB_SHA" \
+              --latest
+          fi
