@@ -2,6 +2,10 @@
 
 mzRead 是一个面向 macOS 的本地 Markdown 阅读器，基于 Tauri 2、Vue 3 与 Rust 构建。它专注于轻量、快速、安全地打开和阅读本地 Markdown 文档，适合日常笔记、项目文档、说明书与知识库文件浏览。
 
+## 界面预览
+
+![mzRead 界面预览](public/test.png)
+
 ## 功能特性
 
 - 打开 `.md`、`.markdown`、`.mdown`、`.mkd` 本地 Markdown 文件
