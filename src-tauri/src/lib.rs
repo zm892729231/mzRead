@@ -136,6 +136,15 @@ fn markdown_paths_from_args(args: Vec<String>, cwd: &str) -> Vec<String> {
         .collect()
 }
 
+fn initial_markdown_paths() -> Vec<String> {
+    let cwd = std::env::current_dir()
+        .ok()
+        .map(|path| path.to_string_lossy().to_string())
+        .unwrap_or_default();
+
+    markdown_paths_from_args(std::env::args().collect(), &cwd)
+}
+
 fn show_main_window<R: Runtime>(app: &tauri::AppHandle<R>) {
     if let Some(window) = app.get_webview_window("main") {
         let _ = window.show();
@@ -270,7 +279,7 @@ fn build_tray_menu<R: Runtime>(
 
     // 5. 版本与作者署名 (置灰)
     let version_item =
-        MenuItem::with_id(app, "tray_version", "Version 0.1.0", false, None::<&str>)?;
+        MenuItem::with_id(app, "tray_version", "Version 0.2.1", false, None::<&str>)?;
     let author_item = MenuItem::with_id(
         app,
         "tray_author",
@@ -286,7 +295,7 @@ fn build_tray_menu<R: Runtime>(
     menu.append(&sep2)?;
 
     // 7. 退出软件
-    let exit_item = MenuItem::with_id(app, "exit_app", "退出软件", true, Some("cmd+q"))?;
+    let exit_item = MenuItem::with_id(app, "exit_app", "退出软件", true, Some("CmdOrCtrl+Q"))?;
     menu.append(&exit_item)?;
 
     Ok(menu)
@@ -438,6 +447,9 @@ pub fn run() {
                 .icon(icon)
                 .menu(&menu)
                 .build(app)?;
+
+            // Windows 通过文件关联首次启动时只会传入命令行参数，不会触发 Opened 事件。
+            emit_open_files(app.handle(), initial_markdown_paths());
 
             Ok(())
         })

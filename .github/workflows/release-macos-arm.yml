@@ -1,4 +1,4 @@
-name: Release macOS ARM
+name: Release Desktop Apps
 
 on:
   push:
@@ -7,7 +7,7 @@ on:
   workflow_dispatch:
     inputs:
       tag:
-        description: "发布标签，例如 v0.1.0；留空时使用 package.json 的 version。"
+        description: "发布标签，例如 v0.2.1；留空时使用 package.json 的 version。"
         required: false
         type: string
 
@@ -15,7 +15,7 @@ permissions:
   contents: write
 
 concurrency:
-  group: release-macos-arm-${{ github.ref_name }}-${{ inputs.tag }}
+  group: release-desktop-${{ github.ref_name }}-${{ inputs.tag }}
   cancel-in-progress: false
 
 env:
@@ -23,15 +23,83 @@ env:
   RUST_BACKTRACE: 1
 
 jobs:
-  build-and-release:
-    name: Build and publish macOS ARM
-    runs-on: macos-15
+  metadata:
+    name: Resolve release metadata
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+      tag: ${{ steps.version.outputs.tag }}
 
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
+
+      - name: Resolve and verify release version
+        id: version
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          package_version="$(node -p "require('./package.json').version")"
+          cargo_version="$(sed -n 's/^version = "\([^"]*\)"$/\1/p' src-tauri/Cargo.toml | head -1)"
+          tauri_version="$(node -p "JSON.parse(require('node:fs').readFileSync('src-tauri/tauri.conf.json', 'utf8')).version")"
+
+          if [ "$package_version" != "$cargo_version" ] || [ "$package_version" != "$tauri_version" ]; then
+            echo "::error::package.json、Cargo.toml 与 tauri.conf.json 的版本号必须一致。"
+            exit 1
+          fi
+
+          input_tag="${{ inputs.tag }}"
+          if [ "${{ github.ref_type }}" = "tag" ]; then
+            raw_tag="${{ github.ref_name }}"
+          elif [ -n "$input_tag" ]; then
+            raw_tag="$input_tag"
+          else
+            raw_tag="v$package_version"
+          fi
+
+          version="${raw_tag#v}"
+          tag="v${version}"
+
+          if ! [[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+([-.][0-9A-Za-z.-]+)?$ ]]; then
+            echo "::error::版本号格式不合法：$version"
+            exit 1
+          fi
+
+          if [ "$version" != "$package_version" ]; then
+            echo "::error::发布标签 $tag 与项目版本 $package_version 不一致。"
+            exit 1
+          fi
+
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+
+  build:
+    name: Build ${{ matrix.name }}
+    needs: metadata
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: macOS ARM64
+            platform: macos
+            os: macos-15
+            rust_target: aarch64-apple-darwin
+            bundle: dmg
+            asset_suffix: macos_arm64
+            extension: dmg
+          - name: Windows x64
+            platform: windows
+            os: windows-2022
+            rust_target: x86_64-pc-windows-msvc
+            bundle: nsis
+            asset_suffix: windows_x64
+            extension: exe
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
 
       - name: Setup Node.js
         uses: actions/setup-node@v4
@@ -46,59 +114,29 @@ jobs:
           corepack prepare pnpm@11.7.0 --activate
           pnpm --version
 
-      - name: Resolve release version
-        id: version
-        shell: bash
-        run: |
-          set -euo pipefail
-
-          input_tag="${{ inputs.tag }}"
-          if [ "${{ github.ref_type }}" = "tag" ]; then
-            raw_tag="${{ github.ref_name }}"
-          elif [ -n "$input_tag" ]; then
-            raw_tag="$input_tag"
-          else
-            raw_tag="v$(node -p "require('./package.json').version")"
-          fi
-
-          version="${raw_tag#v}"
-          tag="v${version}"
-
-          if ! [[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+([-.][0-9A-Za-z.-]+)?$ ]]; then
-            echo "::error::版本号格式不合法：$version"
-            exit 1
-          fi
-
-          echo "version=$version" >> "$GITHUB_OUTPUT"
-          echo "tag=$tag" >> "$GITHUB_OUTPUT"
-
       - name: Setup Rust
         uses: dtolnay/rust-toolchain@stable
         with:
-          targets: aarch64-apple-darwin
+          targets: ${{ matrix.rust_target }}
 
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
 
-      - name: Build macOS ARM DMG
-        shell: bash
-        run: |
-          set -euo pipefail
-          pnpm exec tauri build --target aarch64-apple-darwin --bundles dmg
+      - name: Build installer
+        run: pnpm exec tauri build --target ${{ matrix.rust_target }} --bundles ${{ matrix.bundle }}
 
-      - name: Prepare release assets
-        id: assets
+      - name: Prepare macOS release assets
+        if: matrix.platform == 'macos'
         shell: bash
         run: |
           set -euo pipefail
 
-          version="${{ steps.version.outputs.version }}"
+          version="${{ needs.metadata.outputs.version }}"
           mkdir -p release-assets
-
           dmg_path="$(find src-tauri/target -path "*/release/bundle/dmg/*.dmg" -type f -print -quit)"
+
           if [ -z "$dmg_path" ]; then
-            echo "::error::未找到 macOS ARM DMG 产物。"
-            find src-tauri/target -maxdepth 6 -type f | sort
+            echo "::error::未找到 macOS ARM64 DMG 产物。"
             exit 1
           fi
 
@@ -106,45 +144,88 @@ jobs:
           cp "$dmg_path" "release-assets/$asset_name"
           shasum -a 256 "release-assets/$asset_name" > "release-assets/$asset_name.sha256"
 
-          checksum="$(awk '{print $1}' "release-assets/$asset_name.sha256")"
-          echo "asset_name=$asset_name" >> "$GITHUB_OUTPUT"
-          echo "checksum=$checksum" >> "$GITHUB_OUTPUT"
+      - name: Prepare Windows release assets
+        if: matrix.platform == 'windows'
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $version = "${{ needs.metadata.outputs.version }}"
+          New-Item -ItemType Directory -Force -Path release-assets | Out-Null
+          $installer = Get-ChildItem -Path src-tauri/target -Recurse -Filter *.exe |
+            Where-Object { $_.FullName -match '[\\/]bundle[\\/]nsis[\\/]' } |
+            Select-Object -First 1
+
+          if (-not $installer) {
+            Write-Error "未找到 Windows x64 NSIS 安装包。"
+          }
+
+          $assetName = "mzRead_${version}_windows_x64.exe"
+          $assetPath = Join-Path release-assets $assetName
+          Copy-Item $installer.FullName $assetPath
+          $hash = (Get-FileHash -Algorithm SHA256 $assetPath).Hash.ToLowerInvariant()
+          "$hash  $assetName" | Set-Content -NoNewline ("$assetPath.sha256")
+
+      - name: Upload release assets
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-assets-${{ matrix.platform }}
+          path: release-assets/*
+          if-no-files-found: error
+
+  publish:
+    name: Publish GitHub Release
+    needs: [metadata, build]
+    runs-on: ubuntu-latest
+    concurrency:
+      group: publish-release-${{ needs.metadata.outputs.tag }}
+      cancel-in-progress: false
+
+    steps:
+      - name: Download release assets
+        uses: actions/download-artifact@v4
+        with:
+          pattern: release-assets-*
+          path: release-assets
+          merge-multiple: true
 
       - name: Generate release notes
         shell: bash
         run: |
           set -euo pipefail
 
+          version="${{ needs.metadata.outputs.version }}"
+          mac_asset="mzRead_${version}_macos_arm64.dmg"
+          windows_asset="mzRead_${version}_windows_x64.exe"
+          mac_checksum="$(awk '{print $1}' "release-assets/$mac_asset.sha256")"
+          windows_checksum="$(awk '{print $1}' "release-assets/$windows_asset.sha256")"
+
           cat > release-notes.md <<EOF_NOTES
-          ## mzRead ${{ steps.version.outputs.tag }}
+          ## mzRead v${version}
 
-          mzRead 是一个面向 macOS 的轻量本地 Markdown 阅读器。本版本仅发布 macOS Apple Silicon（ARM64）安装包。
+          ### 主要改动
 
-          ### 首版功能
-
-          - 打开 \`.md\`、\`.markdown\`、\`.mdown\`、\`.mkd\` 本地 Markdown 文件
-          - 使用 Tailwind CSS Typography 提供舒适阅读排版
-          - 自动生成文档大纲，支持标题定位与当前章节高亮
-          - 支持代码块快捷复制
-          - 使用 DOMPurify 清理 Markdown 渲染后的 HTML
-          - 支持浅色 / 深色主题切换
-          - 支持最近文件记录、系统托盘快速访问与 macOS 文件关联
+          - 新增 Windows x64 支持，并提供 NSIS \`.exe\` 安装包。
+          - Markdown 文件关联在 Windows 首次启动时可直接读取被双击打开的文件；再次打开文件时会复用现有窗口。
+          - 系统托盘退出快捷键改为跨平台的 \`CmdOrCtrl+Q\`。
+          - 发布流程改为同时构建 macOS Apple Silicon 与 Windows x64，并为每个安装包提供 SHA256 校验文件。
 
           ### 下载
 
-          - macOS Apple Silicon：\`${{ steps.assets.outputs.asset_name }}\`
-          - SHA256：\`${{ steps.assets.outputs.checksum }}\`
+          - macOS Apple Silicon: \`${mac_asset}\`
+          - SHA256: \`${mac_checksum}\`
+          - Windows x64: \`${windows_asset}\`
+          - SHA256: \`${windows_checksum}\`
 
-          > 说明：当前应用未做 Apple Developer ID 签名与公证。如 macOS 首次打开时提示安全限制，可在系统设置的“隐私与安全性”中允许打开。
+          > 当前安装包尚未进行平台代码签名。macOS 可能提示安全限制，Windows 可能显示 SmartScreen 警告；确认下载来源后可按系统提示继续安装。
           EOF_NOTES
 
-          sed -i '' 's/^          //' release-notes.md
+          sed -i 's/^          //' release-notes.md
 
       - name: Publish GitHub Release
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
-          TAG: ${{ steps.version.outputs.tag }}
+          TAG: ${{ needs.metadata.outputs.tag }}
         run: |
           set -euo pipefail
 

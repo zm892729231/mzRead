@@ -43,7 +43,7 @@ const systemTheme = window.matchMedia("(prefers-color-scheme: dark)")
 
 const sampleMarkdown = `# 欢迎使用 mzRead
 
-这是一个专门阅读 macOS 本地 Markdown 文档的轻量应用。
+这是一个轻量、专注的本地 Markdown 阅读器。
 
 ## 核心功能
 
@@ -615,7 +615,7 @@ onUnmounted(() => {
     <div class="h-7 shrink-0 bg-muted/40 border-b flex items-center justify-between px-3 text-[10px] text-muted-foreground select-none z-45">
       <div class="flex items-center gap-1.5 min-w-0">
         <span class="size-1.5 rounded-full bg-emerald-500 animate-pulse"></span>
-        <span class="font-medium">mzRead v0.1.0</span>
+        <span class="font-medium">mzRead v0.2.1</span>
         <span v-if="currentDocument" class="text-muted-foreground/30 font-light">|</span>
         <span v-if="currentDocument" class="truncate max-w-[280px] font-mono text-[9px] text-muted-foreground/90">{{ currentDocument.file_name }}</span>
       </div>
@@ -648,7 +648,7 @@ onUnmounted(() => {
             </div>
             <div class="min-w-0 flex-1">
               <h1 class="text-base font-semibold tracking-tight truncate">mzRead</h1>
-              <p class="text-xs text-muted-foreground">macOS 本地阅读器</p>
+              <p class="text-xs text-muted-foreground">本地 Markdown 阅读器</p>
             </div>
 
             <!-- 左击 Popover 最近文档菜单 (最多8条) -->
@@ -942,7 +942,7 @@ onUnmounted(() => {
               </div>
               <h1 class="text-2xl font-bold tracking-tight bg-clip-text text-foreground">欢迎使用 mzRead</h1>
               <p class="text-xs text-muted-foreground max-w-sm mx-auto">
-                macOS 风格的本地 Markdown 阅读器。拖入或直接打开您的 Markdown 文件，享受极致舒适的排版阅读体验。
+                专注阅读的本地 Markdown 阅读器。拖入或直接打开您的 Markdown 文件，享受舒适的排版阅读体验。
               </p>
             </div>
 
