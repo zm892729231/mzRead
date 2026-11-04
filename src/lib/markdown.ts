@@ -7,6 +7,14 @@ const renderer = new MarkdownIt({
   typographer: true,
 })
 
+renderer.core.ruler.push('source_map', (state) => {
+  for (const token of state.tokens) {
+    if (token.map && token.type !== 'inline') {
+      token.attrSet('data-line', String(token.map[0]))
+    }
+  }
+})
+
 let headingCount = 0
 
 const defaultLinkOpen =
@@ -24,7 +32,7 @@ renderer.renderer.rules.link_open = (tokens, idx, options, env, self) => {
 
 renderer.renderer.rules.heading_open = (tokens, idx, options, _env, self) => {
   const token = tokens[idx]
-  if (["h1", "h2", "h3"].includes(token.tag)) {
+  if (["h1", "h2", "h3", "h4"].includes(token.tag)) {
     token.attrSet("id", `heading-${headingCount++}`)
   }
   return self.renderToken(tokens, idx, options)
@@ -33,7 +41,7 @@ renderer.renderer.rules.heading_open = (tokens, idx, options, _env, self) => {
 export function renderMarkdown(source: string) {
   headingCount = 0
   return DOMPurify.sanitize(renderer.render(source), {
-    ADD_ATTR: ["target", "rel", "id"], // 允许 id 属性
+    ADD_ATTR: ["target", "rel", "id", "data-line"], // 允许 id, data-line 属性
     FORBID_ATTR: ["style"],
     FORBID_TAGS: [
       "button",

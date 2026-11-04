@@ -143,6 +143,35 @@ textarea {
   --sidebar-ring: oklch(0.556 0 0);
 }
 
+.sepia {
+  --background: #fbf3e4;
+  --foreground: #433422;
+  --card: #f6ebd5;
+  --card-foreground: #433422;
+  --popover: #f8eee0;
+  --popover-foreground: #433422;
+  --primary: #92400e;
+  --primary-foreground: #fefce8;
+  --secondary: #eee2ca;
+  --secondary-foreground: #433422;
+  --muted: #ecdcb9;
+  --muted-foreground: #786248;
+  --accent: #e8d5ae;
+  --accent-foreground: #433422;
+  --destructive: #b91c1c;
+  --border: #dfcca5;
+  --input: #dfcca5;
+  --ring: #a16207;
+  --sidebar: #f5e7cb;
+  --sidebar-foreground: #433422;
+  --sidebar-primary: #92400e;
+  --sidebar-primary-foreground: #fefce8;
+  --sidebar-accent: #ecdcb9;
+  --sidebar-accent-foreground: #433422;
+  --sidebar-border: #dfcca5;
+  --sidebar-ring: #a16207;
+}
+
 @layer base {
   * {
     @apply border-border outline-ring/50;
@@ -316,21 +345,75 @@ article,
 }
 
 /* 限制文字段落和标题的黄金阅读宽度，表格和代码块可按内容突破到更宽 */
-.prose > p,
-.prose > h1,
-.prose > h2,
-.prose > h3,
-.prose > ul,
-.prose > ol,
-.prose > blockquote {
+.prose:not(.reading-mode-wide) > p,
+.prose:not(.reading-mode-wide) > h1,
+.prose:not(.reading-mode-wide) > h2,
+.prose:not(.reading-mode-wide) > h3,
+.prose:not(.reading-mode-wide) > h4,
+.prose:not(.reading-mode-wide) > ul,
+.prose:not(.reading-mode-wide) > ol,
+.prose:not(.reading-mode-wide) > blockquote {
   max-width: 48rem;
   margin-left: auto !important;
   margin-right: auto !important;
 }
 
-/* 让代码块容器在 hover 时展现复制按钮 */
+.prose.reading-mode-wide > p,
+.prose.reading-mode-wide > h1,
+.prose.reading-mode-wide > h2,
+.prose.reading-mode-wide > h3,
+.prose.reading-mode-wide > h4,
+.prose.reading-mode-wide > ul,
+.prose.reading-mode-wide > ol,
+.prose.reading-mode-wide > blockquote {
+  max-width: 100% !important;
+}
+
+.prose.reading-mode-wide .code-block-wrapper,
+.prose.reading-mode-wide > pre,
+.prose.reading-mode-wide > table {
+  max-width: 100% !important;
+  width: 100% !important;
+}
+
+/* 图片缩放鼠标手型 */
+.prose img {
+  cursor: zoom-in;
+  transition: transform 0.2s ease, opacity 0.2s ease;
+}
+.prose img:hover {
+  opacity: 0.95;
+}
+
+/* 让代码块容器在 hover 时展现复制按钮与语言标签 */
 .code-block-wrapper:hover .copy-code-btn {
   opacity: 1 !important;
 }
+
+/* 顶部阅读进度条 */
+.reading-progress-track {
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  height: 2px;
+  background: transparent;
+  z-index: 50;
+  pointer-events: none;
+}
+.reading-progress-bar {
+  height: 100%;
+  background: var(--color-primary);
+  transition: width 0.12s ease-out;
+}
+
+/* 回到顶部悬浮按钮微动效 */
+.back-to-top-btn {
+  transition: opacity 0.25s ease, transform 0.25s ease;
+}
+.back-to-top-btn:hover {
+  transform: translateY(-2px);
+}
+
 
 

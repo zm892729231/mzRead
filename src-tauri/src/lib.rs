@@ -279,7 +279,7 @@ fn build_tray_menu<R: Runtime>(
 
     // 5. 版本与作者署名 (置灰)
     let version_item =
-        MenuItem::with_id(app, "tray_version", "Version 0.2.1", false, None::<&str>)?;
+        MenuItem::with_id(app, "tray_version", "Version 0.3.0", false, None::<&str>)?;
     let author_item = MenuItem::with_id(
         app,
         "tray_author",

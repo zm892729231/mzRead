@@ -20,6 +20,7 @@ src-tauri/target
 !.vscode/extensions.json
 .idea
 .DS_Store
+.local-backups
 *.suo
 *.ntvs*
 *.njsproj
