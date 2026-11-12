@@ -1,5 +1,6 @@
 @import "tailwindcss";
 @import "tw-animate-css";
+@import "katex/dist/katex.min.css";
 @plugin "@tailwindcss/typography";
 
 @custom-variant dark (&:is(.dark *));
@@ -290,58 +291,38 @@ article,
   word-break: break-word !important;
 }
 
-/* Markdown 表格：表头不拆成竖排，长示例值优先在自身列内换行 */
-.prose > table {
-  width: 100%;
-  max-width: min(100%, 82rem);
-  margin-left: auto !important;
-  margin-right: auto !important;
-  table-layout: auto;
-}
-
+/* Markdown 通用响应式表格 */
 .prose table {
+  width: 100%;
+  max-width: 100%;
+  border-collapse: collapse;
   text-align: left;
+  margin: 1.5rem auto !important;
+  font-size: 0.9em;
+  display: table;
+  overflow-x: auto;
 }
 
 .prose table th {
   text-align: left !important;
   vertical-align: bottom;
+  padding: 0.6rem 0.85rem !important;
+  border-bottom: 2px solid var(--color-border);
+  font-weight: 600;
   white-space: nowrap;
-  word-break: keep-all !important;
-  overflow-wrap: normal !important;
 }
 
 .prose table td {
   text-align: left !important;
   vertical-align: top;
+  padding: 0.6rem 0.85rem !important;
+  border-bottom: 1px solid var(--color-border);
   word-break: normal !important;
-  overflow-wrap: anywhere !important;
+  overflow-wrap: break-word !important;
 }
 
-.prose table th:first-child,
-.prose table td:first-child {
-  min-width: 5.5rem;
-  width: 8rem;
-}
-
-.prose table th:nth-child(2),
-.prose table td:nth-child(2) {
-  min-width: 18rem;
-}
-
-.prose table th:nth-child(3),
-.prose table td:nth-child(3) {
-  min-width: 6rem;
-  width: 7rem;
-  white-space: nowrap;
-  word-break: keep-all !important;
-  overflow-wrap: normal !important;
-}
-
-.prose table th:nth-child(4),
-.prose table td:nth-child(4) {
-  min-width: 7rem;
-  width: 9rem;
+.prose table tr:hover td {
+  background-color: var(--color-muted);
 }
 
 /* 限制文字段落和标题的黄金阅读宽度，表格和代码块可按内容突破到更宽 */
@@ -414,6 +395,260 @@ article,
 .back-to-top-btn:hover {
   transform: translateY(-2px);
 }
+
+/* ----------------------------------------------------
+ * Highlight.js 代码高亮主题配色 (Light / Dark / Sepia)
+ * ---------------------------------------------------- */
+pre code.hljs {
+  display: block;
+  overflow-x: auto;
+  padding: 0;
+  background: transparent !important;
+}
+
+:root {
+  --hljs-text: #24292f;
+  --hljs-keyword: #cf222e;
+  --hljs-string: #0a3069;
+  --hljs-comment: #6e7781;
+  --hljs-function: #8250df;
+  --hljs-title: #953800;
+  --hljs-variable: #953800;
+  --hljs-number: #0550ae;
+  --hljs-type: #116329;
+  --hljs-tag: #116329;
+  --hljs-attr: #0550ae;
+}
+
+.dark {
+  --hljs-text: #c9d1d9;
+  --hljs-keyword: #ff7b72;
+  --hljs-string: #a5d6ff;
+  --hljs-comment: #8b949e;
+  --hljs-function: #d2a8ff;
+  --hljs-title: #ffa657;
+  --hljs-variable: #ffa657;
+  --hljs-number: #79c0ff;
+  --hljs-type: #7ee787;
+  --hljs-tag: #7ee787;
+  --hljs-attr: #79c0ff;
+}
+
+.sepia {
+  --hljs-text: #433422;
+  --hljs-keyword: #9a3412;
+  --hljs-string: #15803d;
+  --hljs-comment: #8c7355;
+  --hljs-function: #6d28d9;
+  --hljs-title: #b45309;
+  --hljs-variable: #9a3412;
+  --hljs-number: #b91c1c;
+  --hljs-type: #047857;
+  --hljs-tag: #047857;
+  --hljs-attr: #b45309;
+}
+
+.hljs {
+  color: var(--hljs-text);
+}
+.hljs-doctag,
+.hljs-keyword,
+.hljs-meta .hljs-keyword,
+.hljs-template-tag,
+.hljs-template-variable,
+.hljs-type,
+.hljs-variable.language_ {
+  color: var(--hljs-keyword);
+  font-weight: 600;
+}
+.hljs-title,
+.hljs-title.class_,
+.hljs-title.class_.inherited__,
+.hljs-title.function_ {
+  color: var(--hljs-function);
+  font-weight: 600;
+}
+.hljs-attr,
+.hljs-attribute,
+.hljs-literal,
+.hljs-meta,
+.hljs-number,
+.hljs-operator,
+.hljs-selector-attr,
+.hljs-selector-class,
+.hljs-selector-id {
+  color: var(--hljs-number);
+}
+.hljs-regexp,
+.hljs-string,
+.hljs-meta .hljs-string {
+  color: var(--hljs-string);
+}
+.hljs-built_in,
+.hljs-symbol {
+  color: var(--hljs-title);
+}
+.hljs-comment,
+.hljs-code,
+.hljs-formula {
+  color: var(--hljs-comment);
+  font-style: italic;
+}
+.hljs-name,
+.hljs-quote,
+.hljs-selector-tag,
+.hljs-selector-pseudo {
+  color: var(--hljs-tag);
+}
+.hljs-subst {
+  color: var(--hljs-text);
+}
+.hljs-section {
+  color: var(--hljs-function);
+  font-weight: bold;
+}
+.hljs-bullet {
+  color: var(--hljs-number);
+}
+.hljs-emphasis {
+  font-style: italic;
+}
+.hljs-strong {
+  font-weight: bold;
+}
+.hljs-addition {
+  color: #116329;
+  background-color: #dafbe1;
+}
+.hljs-deletion {
+  color: #82071e;
+  background-color: #ffebe9;
+}
+.dark .hljs-addition {
+  color: #7ee787;
+  background-color: rgba(46, 160, 67, 0.15);
+}
+.dark .hljs-deletion {
+  color: #ffdcd7;
+  background-color: rgba(248, 81, 73, 0.15);
+}
+
+/* ----------------------------------------------------
+ * 任务列表 Task Lists 样式
+ * ---------------------------------------------------- */
+.contains-task-list {
+  list-style-type: none !important;
+  padding-left: 0.25rem !important;
+}
+
+.task-list-item {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.5rem;
+  margin-top: 0.35rem !important;
+  margin-bottom: 0.35rem !important;
+}
+
+.task-list-item-checkbox {
+  margin-top: 0.3rem !important;
+  margin-right: 0.25rem !important;
+  appearance: none;
+  width: 1.05rem;
+  height: 1.05rem;
+  border-radius: 0.25rem;
+  border: 1.5px solid var(--color-border);
+  background-color: var(--color-background);
+  cursor: default;
+  display: inline-grid;
+  place-content: center;
+  transition: all 0.15s ease-in-out;
+  shrink: 0;
+}
+
+.task-list-item-checkbox:checked {
+  background-color: var(--color-primary);
+  border-color: var(--color-primary);
+}
+
+.task-list-item-checkbox:checked::before {
+  content: "";
+  width: 0.55rem;
+  height: 0.3rem;
+  border-left: 2px solid var(--color-primary-foreground);
+  border-bottom: 2px solid var(--color-primary-foreground);
+  transform: rotate(-45deg) translate(0.5px, -1px);
+}
+
+/* ----------------------------------------------------
+ * 脚注 Footnotes 样式
+ * ---------------------------------------------------- */
+.footnotes {
+  margin-top: 3rem;
+  padding-top: 1.5rem;
+  border-top: 1px dashed var(--color-border);
+  font-size: 0.85rem;
+  color: var(--color-muted-foreground);
+}
+
+.footnotes-sep {
+  display: none;
+}
+
+.footnotes-list {
+  padding-left: 1.25rem;
+}
+
+.footnote-item {
+  margin-bottom: 0.5rem;
+}
+
+.footnote-backref {
+  text-decoration: none;
+  margin-left: 0.35rem;
+  font-family: monospace;
+  color: var(--color-primary);
+  opacity: 0.8;
+}
+.footnote-backref:hover {
+  opacity: 1;
+}
+
+.footnote-ref a {
+  text-decoration: none;
+  font-weight: 600;
+  color: var(--color-primary);
+  padding: 0 0.15rem;
+}
+
+/* ----------------------------------------------------
+ * Mermaid 流程图与图表
+ * ---------------------------------------------------- */
+.mermaid {
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  margin: 1.5rem 0;
+  padding: 1.25rem;
+  background: var(--color-muted);
+  border: 1px solid var(--color-border);
+  border-radius: 0.75rem;
+  overflow-x: auto;
+}
+.mermaid svg {
+  max-width: 100% !important;
+  height: auto !important;
+}
+
+/* ----------------------------------------------------
+ * KaTeX 数学公式排版
+ * ---------------------------------------------------- */
+.katex-display {
+  overflow-x: auto;
+  overflow-y: hidden;
+  padding: 0.5rem 0;
+  margin: 1rem 0 !important;
+}
+
 
 
 

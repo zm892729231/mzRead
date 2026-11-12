@@ -1,3 +1,4 @@
+use notify::{Config, Event, EventKind, RecommendedWatcher, RecursiveMode, Watcher};
 use serde::Serialize;
 use std::{
     collections::HashMap,
@@ -25,6 +26,7 @@ struct MarkdownDocument {
 
 struct OpenedFiles(Mutex<Vec<String>>);
 struct RecentPathsState(Mutex<Vec<String>>);
+struct FileWatcherState(Mutex<Option<RecommendedWatcher>>);
 
 fn recent_paths_file<R: Runtime>(app: &tauri::AppHandle<R>) -> Result<PathBuf, String> {
     app.path()
@@ -378,6 +380,62 @@ fn recent_paths(app: tauri::AppHandle) -> Vec<String> {
 }
 
 #[tauri::command]
+fn watch_file(app: tauri::AppHandle, path: String) -> Result<(), String> {
+    let target_path = PathBuf::from(&path);
+    if !target_path.exists() {
+        return Err("文件不存在".to_string());
+    }
+
+    let state = app.state::<FileWatcherState>();
+    let mut lock = state.0.lock().unwrap();
+    // 释放旧的文件监听器
+    *lock = None;
+
+    let app_handle = app.clone();
+    let canonical_target = target_path
+        .canonicalize()
+        .unwrap_or_else(|_| target_path.clone());
+    let canonical_str = canonical_target.to_string_lossy().to_string();
+
+    let watcher = RecommendedWatcher::new(
+        move |res: Result<Event, notify::Error>| {
+            if let Ok(event) = res {
+                if matches!(event.kind, EventKind::Modify(_)) {
+                    for p in &event.paths {
+                        let is_match = p
+                            .canonicalize()
+                            .map(|cp| cp == canonical_target)
+                            .unwrap_or_else(|_| p == &canonical_target);
+                        if is_match {
+                            let _ = app_handle.emit("file-modified", canonical_str.clone());
+                            break;
+                        }
+                    }
+                }
+            }
+        },
+        Config::default(),
+    )
+    .map_err(|e| format!("创建文件监听器失败：{e}"))?;
+
+    let mut watcher = watcher;
+    let watch_dir = target_path.parent().unwrap_or(&target_path);
+    watcher
+        .watch(watch_dir, RecursiveMode::NonRecursive)
+        .map_err(|e| format!("注册文件系统监听失败：{e}"))?;
+
+    *lock = Some(watcher);
+    Ok(())
+}
+
+#[tauri::command]
+fn unwatch_file(app: tauri::AppHandle) {
+    let state = app.state::<FileWatcherState>();
+    let mut lock = state.0.lock().unwrap();
+    *lock = None;
+}
+
+#[tauri::command]
 fn exit_app(app: tauri::AppHandle) {
     app.exit(0);
 }
@@ -391,7 +449,8 @@ fn update_recent_paths(app: tauri::AppHandle, paths: Vec<String>) -> Result<(), 
 pub fn run() {
     let mut builder = tauri::Builder::default()
         .manage(OpenedFiles(Mutex::new(Vec::new())))
-        .manage(RecentPathsState(Mutex::new(Vec::new())));
+        .manage(RecentPathsState(Mutex::new(Vec::new())))
+        .manage(FileWatcherState(Mutex::new(None)));
 
     #[cfg(desktop)]
     {
@@ -412,13 +471,18 @@ pub fn run() {
             opened_files,
             recent_paths,
             exit_app,
-            update_recent_paths
+            update_recent_paths,
+            watch_file,
+            unwatch_file
         ])
         .on_menu_event(|app, event| {
             let id = event.id().as_ref();
             match id {
                 "open_window" => show_main_window(app),
-                "exit_app" => app.exit(0),
+                "exit_app" => {
+                    // 通知前端保存未保存内容并安全退出
+                    let _ = app.emit("request-exit", ());
+                }
                 "no_recent" | "recent_header" | "tray_version" | "tray_author" => {}
                 _ => {
                     // 通知前端加载文件
@@ -464,6 +528,12 @@ pub fn run() {
                 api.prevent_close();
                 if let Some(window) = app.get_webview_window("main") {
                     let _ = window.hide();
+                }
+            }
+            #[cfg(target_os = "macos")]
+            tauri::RunEvent::Reopen { has_visible_windows, .. } => {
+                if !has_visible_windows {
+                    show_main_window(app);
                 }
             }
             #[cfg(any(target_os = "macos", target_os = "ios", target_os = "android"))]

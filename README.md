@@ -13,7 +13,9 @@ mzRead 是一个面向 macOS 与 Windows 的本地 Markdown 阅读器，基于 T
 - 页内快速全文搜索 (⌘F)，支持实时匹配计数、区分大小写 (Aa) 与居中跳转
 - 自动生成文档大纲 (TOC)，支持 H1~H4 层级、章节关键词过滤与滚动自动追踪 (ScrollSpy)
 - 代码块右上角自动识别语言标签，支持一键快捷复制
-- 正文图片支持点击全屏高清放大预览 (Lightbox) 与缩放旋转
+- 正文图片支持点击全屏高清放大预览 (Lightbox) 与缩放旋转，支持本地相对路径图片解析
+- 支持 Mermaid 图表（流程图、时序图、类图等）与 KaTeX 数学公式原生渲染
+- 支持 Markdown 任务列表 (Task Lists) 与脚注 (Footnotes)
 - 使用 DOMPurify 清理 Markdown 渲染后的 HTML，保障浏览安全
 - 支持浅色 (Light) / 深色 (Dark) / 羊皮纸护眼暖色 (Sepia) 三色主题自由切换
 - 自动记忆文档阅读位置，再次打开无缝恢复
@@ -26,8 +28,8 @@ mzRead 是一个面向 macOS 与 Windows 的本地 Markdown 阅读器，基于 T
 
 当前发布以下桌面版本：
 
-- `mzRead_0.3.0_macos_arm64.dmg`：适用于 Apple Silicon Mac（M1/M2/M3/M4 等 ARM 架构）
-- `mzRead_0.3.0_windows_x64.exe`：适用于 64 位 Windows 10/11
+- `mzRead_0.4.0_macos_arm64.dmg`：适用于 Apple Silicon Mac（M1/M2/M3/M4 等 ARM 架构）
+- `mzRead_0.4.0_windows_x64.exe`：适用于 64 位 Windows 10/11
 
 > 说明：当前安装包尚未进行平台代码签名。macOS 可能提示安全限制，Windows 可能显示 SmartScreen 警告；确认下载来源后可按系统提示继续安装。
 
@@ -81,13 +83,13 @@ macOS 构建产物输出位置：
 
 ```text
 src-tauri/target/release/bundle/macos/mzRead.app
-src-tauri/target/release/bundle/dmg/mzRead_0.3.0_aarch64.dmg
+src-tauri/target/release/bundle/dmg/mzRead_0.4.0_aarch64.dmg
 ```
 
 Windows x64 的 NSIS 安装包由 GitHub Actions 在 `windows-2022` 原生环境构建并随 Release 发布，避免在 macOS 上交叉编译和打包 Windows WebView2 应用。
 
 ## 版本
 
-当前版本：`0.3.0`
+当前版本：`0.4.0`
 
 首版重点是稳定打开、阅读和管理本地 Markdown 文档，后续可继续补充搜索、导出、更多主题、快捷键等能力。
