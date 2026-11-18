@@ -1,8 +1,17 @@
-import { ref, type Ref } from "vue"
+import { computed, nextTick, ref, type Ref } from "vue"
+import { findElementForLine } from "@/composables/useEditorPreviewSync"
 
 export interface EditorMatch {
   start: number
   end: number
+  line: number
+}
+
+function escapeHtml(str: string): string {
+  return str
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
 }
 
 export function useSearch(
@@ -10,6 +19,9 @@ export function useSearch(
   rawMarkdown: Ref<string>,
   isEditing: Ref<boolean>,
   editLayoutMode: Ref<"split" | "edit" | "preview">,
+  textareaRef: Ref<HTMLTextAreaElement | null>,
+  editorBackdropRef: Ref<HTMLElement | null>,
+  previewContainerRef: Ref<HTMLElement | null>,
 ) {
   const showSearch = ref(false)
   const searchQuery = ref("")
@@ -18,6 +30,46 @@ export function useSearch(
 
   const searchMatches = ref<HTMLElement[]>([])
   const editorMatches = ref<EditorMatch[]>([])
+
+  // 编辑模式（分栏或纯编辑）下优先搜索编辑区源码
+  const isEditorSearchMode = computed(
+    () => isEditing.value && (editLayoutMode.value === "split" || editLayoutMode.value === "edit"),
+  )
+
+  const totalMatches = computed(() =>
+    isEditorSearchMode.value ? editorMatches.value.length : searchMatches.value.length,
+  )
+
+  // 生成编辑器背景层高亮 HTML，确保输入搜索时无需抢占焦点即可实时显示全部匹配与当前项
+  const editorBackdropHtml = computed(() => {
+    if (!showSearch.value || !isEditorSearchMode.value || editorMatches.value.length === 0) {
+      return ""
+    }
+    const text = rawMarkdown.value
+    const parts: string[] = []
+    let cursor = 0
+
+    editorMatches.value.forEach((m, idx) => {
+      if (m.start > cursor) {
+        parts.push(escapeHtml(text.slice(cursor, m.start)))
+      }
+      const cls =
+        idx === currentMatchIndex.value
+          ? "editor-search-highlight editor-search-highlight-current"
+          : "editor-search-highlight"
+      parts.push(`<mark class="${cls}">${escapeHtml(text.slice(m.start, m.end))}</mark>`)
+      cursor = m.end
+    })
+
+    if (cursor < text.length) {
+      parts.push(escapeHtml(text.slice(cursor)))
+    }
+    // 保留末尾空行高度，与 textarea 滚动高度保持一致
+    if (text.endsWith("\n")) {
+      parts.push(" ")
+    }
+    return parts.join("")
+  })
 
   function clearHighlights(root: HTMLElement) {
     const marks = root.querySelectorAll("mark.search-highlight")
@@ -74,10 +126,17 @@ export function useSearch(
             parent.removeChild(node)
           }
         }
-      } else if (
-        node.nodeType === Node.ELEMENT_NODE &&
-        !["SCRIPT", "STYLE", "TEXTAREA", "INPUT", "MARK"].includes((node as Element).tagName)
-      ) {
+      } else if (node.nodeType === Node.ELEMENT_NODE) {
+        const el = node as Element
+        if (
+          ["SCRIPT", "STYLE", "TEXTAREA", "INPUT", "BUTTON", "MARK", "SVG"].includes(el.tagName) ||
+          el.classList.contains("katex-mathml") ||
+          el.classList.contains("mermaid") ||
+          el.classList.contains("code-lang-badge") ||
+          el.classList.contains("copy-code-btn")
+        ) {
+          return
+        }
         const children = Array.from(node.childNodes)
         for (const child of children) {
           walk(child)
@@ -89,7 +148,115 @@ export function useSearch(
     return marks
   }
 
-  function performSearch(options: { selectInEditor?: boolean } = {}) {
+  function findEditorMatches(text: string, query: string, caseSensitive: boolean): EditorMatch[] {
+    const searchTarget = caseSensitive ? text : text.toLowerCase()
+    const searchNeedle = caseSensitive ? query : query.toLowerCase()
+    const matchesList: EditorMatch[] = []
+
+    let pos = searchTarget.indexOf(searchNeedle)
+    let line = 0
+    let lastPos = 0
+
+    while (pos !== -1) {
+      for (let i = lastPos; i < pos; i++) {
+        if (text.charCodeAt(i) === 10) line++
+      }
+      lastPos = pos
+      matchesList.push({
+        start: pos,
+        end: pos + query.length,
+        line,
+      })
+      pos = searchTarget.indexOf(searchNeedle, pos + Math.max(1, searchNeedle.length))
+    }
+
+    return matchesList
+  }
+
+  function syncPreviewMatchForEditor(match: EditorMatch, scrollToCurrent: boolean) {
+    searchMatches.value.forEach((mark) => {
+      mark.className = "search-highlight"
+    })
+
+    const preview = previewContainerRef.value
+    if (!preview || editLayoutMode.value !== "split") return
+
+    const targetBlock = findElementForLine(preview, match.line)
+    if (!targetBlock) return
+
+    const blockStart = Number(targetBlock.getAttribute("data-line") ?? match.line)
+    const blockEnd = Number(targetBlock.getAttribute("data-line-end") ?? blockStart + 1)
+
+    // 计算当前匹配是该源码块中的第几个匹配，尽量对齐同一块内的多个匹配项
+    let indexInBlock = 0
+    for (let i = 0; i < currentMatchIndex.value; i++) {
+      const prev = editorMatches.value[i]
+      if (prev.line >= blockStart && prev.line < blockEnd) {
+        indexInBlock++
+      }
+    }
+
+    const blockMarks = searchMatches.value.filter((mark) => targetBlock.contains(mark))
+    const activePreviewMark =
+      blockMarks.length > 0
+        ? blockMarks[Math.min(indexInBlock, blockMarks.length - 1)]
+        : null
+
+    if (activePreviewMark) {
+      activePreviewMark.className = "search-highlight search-highlight-current"
+      if (scrollToCurrent) {
+        activePreviewMark.scrollIntoView({ behavior: "smooth", block: "center" })
+      }
+    } else if (scrollToCurrent) {
+      targetBlock.scrollIntoView({ behavior: "smooth", block: "center" })
+    }
+  }
+
+  function highlightCurrentMatch(scrollToCurrent = true) {
+    if (isEditorSearchMode.value) {
+      const match = editorMatches.value[currentMatchIndex.value]
+      if (!match) return
+
+      nextTick(() => {
+        const backdrop = editorBackdropRef.value
+        const textarea = textareaRef.value
+        if (backdrop && textarea) {
+          backdrop.scrollTop = textarea.scrollTop
+          backdrop.scrollLeft = textarea.scrollLeft
+
+          if (scrollToCurrent) {
+            const activeMark = backdrop.querySelector<HTMLElement>(".editor-search-highlight-current")
+            if (activeMark) {
+              const markRect = activeMark.getBoundingClientRect()
+              const backdropRect = backdrop.getBoundingClientRect()
+              const relativeTop = markRect.top - backdropRect.top + backdrop.scrollTop
+              const targetTop = relativeTop - textarea.clientHeight / 2 + markRect.height / 2
+              textarea.scrollTo({
+                top: Math.max(0, targetTop),
+                behavior: "smooth",
+              })
+            }
+          }
+        }
+      })
+
+      syncPreviewMatchForEditor(match, scrollToCurrent)
+      return
+    }
+
+    searchMatches.value.forEach((mark, idx) => {
+      if (idx === currentMatchIndex.value) {
+        mark.className = "search-highlight search-highlight-current"
+        if (scrollToCurrent) {
+          mark.scrollIntoView({ behavior: "smooth", block: "center" })
+        }
+      } else {
+        mark.className = "search-highlight"
+      }
+    })
+  }
+
+  function performSearch(options: { scrollToCurrent?: boolean } = {}) {
     if (articleRef.value) {
       clearHighlights(articleRef.value)
     }
@@ -103,88 +270,34 @@ export function useSearch(
       return
     }
 
-    // 1. 预览区 DOM 文本搜索
     if (articleRef.value) {
       searchMatches.value = highlightDOM(articleRef.value, query, isCaseSensitive.value)
     }
 
-    // 2. 编辑器区域源码搜索
-    if (rawMarkdown.value) {
-      const text = rawMarkdown.value
-      const searchTarget = isCaseSensitive.value ? text : text.toLowerCase()
-      const searchNeedle = isCaseSensitive.value ? query : query.toLowerCase()
-      let pos = searchTarget.indexOf(searchNeedle)
-      const matchesList: EditorMatch[] = []
-      while (pos !== -1) {
-        matchesList.push({
-          start: pos,
-          end: pos + query.length,
-        })
-        pos = searchTarget.indexOf(searchNeedle, pos + 1)
-      }
-      editorMatches.value = matchesList
+    if (rawMarkdown.value && isEditorSearchMode.value) {
+      editorMatches.value = findEditorMatches(rawMarkdown.value, query, isCaseSensitive.value)
     }
 
-    const total = Math.max(searchMatches.value.length, editorMatches.value.length)
+    const total = totalMatches.value
     if (total > 0) {
       if (currentMatchIndex.value < 0 || currentMatchIndex.value >= total) {
         currentMatchIndex.value = 0
       }
-      highlightCurrentMatch(options.selectInEditor ?? false)
+      highlightCurrentMatch(options.scrollToCurrent ?? true)
     } else {
       currentMatchIndex.value = -1
     }
   }
 
-  function highlightCurrentMatch(selectInEditor = false) {
-    searchMatches.value.forEach((mark, idx) => {
-      if (idx === currentMatchIndex.value) {
-        mark.className = "search-highlight search-highlight-current"
-        mark.scrollIntoView({ behavior: "smooth", block: "center" })
-      } else {
-        mark.className = "search-highlight"
-      }
-    })
-
-    // 仅在显式请求（例如点击上一个/下一个）且处于编辑模式时才联动选中文本域，打字触发时决不能抢焦点！
-    if (
-      selectInEditor &&
-      isEditing.value &&
-      (editLayoutMode.value === "split" || editLayoutMode.value === "edit")
-    ) {
-      if (
-        editorMatches.value.length > 0 &&
-        currentMatchIndex.value >= 0 &&
-        currentMatchIndex.value < editorMatches.value.length
-      ) {
-        const match = editorMatches.value[currentMatchIndex.value]
-        const textarea = document.querySelector("textarea")
-        if (textarea) {
-          textarea.focus()
-          textarea.setSelectionRange(match.start, match.end)
-
-          const textBefore = textarea.value.substring(0, match.start)
-          const lineCountBefore = textBefore.split("\n").length
-          const lineHeight = 22
-          const scrollTarget = (lineCountBefore - 5) * lineHeight
-          textarea.scrollTo({
-            top: Math.max(0, scrollTarget),
-            behavior: "smooth",
-          })
-        }
-      }
-    }
-  }
-
   function handleSearchNext() {
-    const total = Math.max(searchMatches.value.length, editorMatches.value.length)
+    const total = totalMatches.value
     if (total === 0) return
     currentMatchIndex.value = (currentMatchIndex.value + 1) % total
     highlightCurrentMatch(true)
   }
 
   function handleSearchPrev() {
-    const total = Math.max(searchMatches.value.length, editorMatches.value.length)
+    const total = totalMatches.value
     if (total === 0) return
     currentMatchIndex.value = (currentMatchIndex.value - 1 + total) % total
     highlightCurrentMatch(true)
@@ -192,10 +305,18 @@ export function useSearch(
 
   function toggleCaseSensitive() {
     isCaseSensitive.value = !isCaseSensitive.value
-    performSearch({ selectInEditor: false })
+    performSearch({ scrollToCurrent: true })
   }
 
-  function closeSearch() {
+  function closeSearch(options: { focusEditor?: boolean } = {}) {
+    const shouldFocusMatch =
+      options.focusEditor &&
+      isEditorSearchMode.value &&
+      currentMatchIndex.value >= 0 &&
+      currentMatchIndex.value < editorMatches.value.length
+
+    const activeMatch = shouldFocusMatch ? editorMatches.value[currentMatchIndex.value] : null
+
     showSearch.value = false
     searchQuery.value = ""
     if (articleRef.value) {
@@ -204,6 +325,14 @@ export function useSearch(
     searchMatches.value = []
     editorMatches.value = []
     currentMatchIndex.value = -1
+
+    if (activeMatch && textareaRef.value) {
+      const textarea = textareaRef.value
+      nextTick(() => {
+        textarea.focus()
+        textarea.setSelectionRange(activeMatch.start, activeMatch.end)
+      })
+    }
   }
 
   function openSearch() {
@@ -217,6 +346,9 @@ export function useSearch(
     currentMatchIndex,
     searchMatches,
     editorMatches,
+    totalMatches,
+    editorBackdropHtml,
+    isEditorSearchMode,
     performSearch,
     handleSearchNext,
     handleSearchPrev,

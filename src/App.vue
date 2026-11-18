@@ -39,6 +39,11 @@ import { useScrollSpy } from "@/composables/useScrollSpy"
 import { useEditorDebounce } from "@/composables/useEditorDebounce"
 import { useFileWatch } from "@/composables/useFileWatch"
 import { useSearch } from "@/composables/useSearch"
+import {
+  useEditorPreviewSync,
+  computeLineOffsets,
+  getLineAtOffset,
+} from "@/composables/useEditorPreviewSync"
 
 interface MarkdownDocument {
   path: string
@@ -142,10 +147,22 @@ const isWideMode = ref(typeof localStorage !== "undefined" && localStorage.getIt
 const fontSize = ref(Number(typeof localStorage !== "undefined" && localStorage.getItem(FONT_SIZE_KEY)) || 16)
 
 // 容器引用与拖拽
+const workspaceRef = ref<HTMLElement | null>(null)
+const workspaceWidth = ref(1000)
+const textareaRef = ref<HTMLTextAreaElement | null>(null)
+const editorBackdropRef = ref<HTMLElement | null>(null)
+const editorClientWidth = ref(0)
 const previewContainerRef = ref<HTMLElement | null>(null)
 const articleRef = ref<HTMLElement | null>(null)
 const isDraggingFile = ref(false)
 let unlistenDragDrop: (() => void) | null = null
+
+const isSplitEdit = computed(() => isEditing.value && editLayoutMode.value === "split")
+const isTocOverlay = computed(() => isSplitEdit.value && workspaceWidth.value < 740)
+const isTocCompact = computed(() => isSplitEdit.value && !isTocOverlay.value)
+const editorPaddingClass = computed(() =>
+  isSplitEdit.value ? "px-5 py-6 md:px-7 md:py-8" : "p-6 md:p-10",
+)
 
 // Lightbox 图片预览
 const lightboxImage = ref<{ src: string; alt: string } | null>(null)
@@ -215,34 +232,99 @@ const {
 } = useScrollSpy(previewContainerRef, articleRef, currentDocPathComputed, recordScrollPosition)
 
 // ----------------------------------------------------
-// 3. 搜索功能 (绝不主动抢夺 textarea 焦点)
+// 3. 搜索功能 (编辑模式下优先搜索源码并同步预览；输入时不抢焦点)
 // ----------------------------------------------------
 const {
   showSearch,
   searchQuery,
   isCaseSensitive,
   currentMatchIndex,
-  searchMatches,
-  editorMatches,
+  totalMatches: totalSearchMatches,
+  editorBackdropHtml,
+  isEditorSearchMode,
   performSearch,
   handleSearchNext,
   handleSearchPrev,
   toggleCaseSensitive,
   closeSearch,
   openSearch,
-} = useSearch(articleRef, rawMarkdown, isEditing, editLayoutMode)
-
-const totalSearchMatches = computed(() =>
-  Math.max(searchMatches.value.length, editorMatches.value.length),
+} = useSearch(
+  articleRef,
+  rawMarkdown,
+  isEditing,
+  editLayoutMode,
+  textareaRef,
+  editorBackdropRef,
+  previewContainerRef,
 )
 
-watch([searchQuery, renderedMarkdown], () => {
+// ----------------------------------------------------
+// 3.5 编辑与预览联动选中 (左侧选区实时同步右侧高亮)
+// ----------------------------------------------------
+const {
+  clearPreviewSelection,
+  syncPreviewToSelection,
+} = useEditorPreviewSync(
+  rawMarkdown,
+  textareaRef,
+  previewContainerRef,
+  articleRef,
+  isEditing,
+  editLayoutMode,
+)
+
+let selectionSyncRafId: number | null = null
+function scheduleSelectionSync(options: { scrollIfOutOfView?: boolean; syncCursorScroll?: boolean } = {}) {
+  if (selectionSyncRafId !== null) cancelAnimationFrame(selectionSyncRafId)
+  selectionSyncRafId = requestAnimationFrame(() => {
+    selectionSyncRafId = null
+    syncPreviewToSelection(options)
+  })
+}
+
+watch(searchQuery, () => {
   if (showSearch.value) {
     nextTick(() => {
-      // 仅刷新搜索高亮标记，selectInEditor: false 决不能抢夺焦点
-      performSearch({ selectInEditor: false })
+      performSearch({ scrollToCurrent: true })
     })
   }
+})
+
+watch([isEditing, editLayoutMode], () => {
+  if (!isSplitEdit.value) {
+    clearPreviewSelection()
+  }
+  if (showSearch.value) {
+    nextTick(() => {
+      performSearch({ scrollToCurrent: true })
+    })
+  }
+})
+
+watch(rawMarkdown, () => {
+  if (showSearch.value && isEditorSearchMode.value) {
+    nextTick(() => {
+      performSearch({ scrollToCurrent: false })
+    })
+  }
+  nextTick(() => {
+    updateEditorClientWidth()
+  })
+})
+
+watch(renderedMarkdown, () => {
+  nextTick(() => {
+    if (showSearch.value) {
+      performSearch({ scrollToCurrent: !isEditorSearchMode.value })
+    }
+    if (
+      isSplitEdit.value &&
+      textareaRef.value &&
+      textareaRef.value.selectionStart !== textareaRef.value.selectionEnd
+    ) {
+      syncPreviewToSelection({ scrollIfOutOfView: false })
+    }
+  })
 })
 
 // ----------------------------------------------------
@@ -552,17 +634,119 @@ function handleTextareaTab(e: KeyboardEvent) {
   })
 }
 
-function syncPreviewScroll() {
-  if (!isEditing.value || editLayoutMode.value !== "split") return
-  const textarea = document.querySelector("textarea")
-  const preview = previewContainerRef.value
-  if (!textarea || !preview) return
-  const textBefore = rawMarkdown.value.substring(0, textarea.selectionStart)
-  const currentLine = textBefore.split("\n").length - 1
-  const targetEl = preview.querySelector(`[data-line="${currentLine}"]`)
-  if (targetEl) {
-    targetEl.scrollIntoView({ behavior: "smooth", block: "center" })
+function updateEditorClientWidth() {
+  if (textareaRef.value) {
+    editorClientWidth.value = textareaRef.value.clientWidth
   }
+}
+
+function updateActiveHeadingByEditorLine(line: number) {
+  if (!isEditing.value || editLayoutMode.value !== "edit" || toc.value.length === 0) return
+  let active = toc.value[0]
+  for (const item of toc.value) {
+    if (item.line <= line) {
+      active = item
+    } else {
+      break
+    }
+  }
+  if (active) {
+    activeHeadingId.value = active.id
+  }
+}
+
+function onEditorScroll() {
+  const textarea = textareaRef.value
+  if (!textarea) return
+
+  if (editorBackdropRef.value) {
+    editorBackdropRef.value.scrollTop = textarea.scrollTop
+    editorBackdropRef.value.scrollLeft = textarea.scrollLeft
+  }
+
+  if (isEditing.value && editLayoutMode.value === "edit") {
+    const maxScroll = textarea.scrollHeight - textarea.clientHeight
+    const ratio = maxScroll > 0 ? Math.min(1, Math.max(0, textarea.scrollTop / maxScroll)) : 0
+    readingProgress.value = ratio * 100
+    const approxLine = Math.floor(ratio * Math.max(0, lineCount.value - 1))
+    updateActiveHeadingByEditorLine(approxLine)
+  }
+}
+
+function handleEditorInteraction(syncCursorScroll: boolean) {
+  const textarea = textareaRef.value
+  if (!textarea) return
+
+  if (isEditing.value && editLayoutMode.value === "edit") {
+    const offsets = computeLineOffsets(rawMarkdown.value)
+    const cursorLine = getLineAtOffset(offsets, textarea.selectionStart)
+    updateActiveHeadingByEditorLine(cursorLine)
+    return
+  }
+
+  scheduleSelectionSync({
+    scrollIfOutOfView: true,
+    syncCursorScroll,
+  })
+}
+
+function measureOffsetTopInTextarea(
+  textarea: HTMLTextAreaElement,
+  textBefore: string,
+  paddingClass: string,
+): number {
+  const mirror = document.createElement("div")
+  mirror.className = `editor-mirror-shared ${paddingClass}`
+  mirror.style.position = "fixed"
+  mirror.style.visibility = "hidden"
+  mirror.style.pointerEvents = "none"
+  mirror.style.top = "-9999px"
+  mirror.style.left = "-9999px"
+  mirror.style.width = `${textarea.clientWidth}px`
+  mirror.textContent = textBefore + "\u200b"
+  document.body.appendChild(mirror)
+
+  const computedStyle = getComputedStyle(textarea)
+  const paddingTop = parseFloat(computedStyle.paddingTop) || 0
+  const paddingBottom = parseFloat(computedStyle.paddingBottom) || 0
+  const lineHeight = parseFloat(computedStyle.lineHeight) || 22.75
+  const contentTop = Math.max(0, mirror.scrollHeight - paddingTop - paddingBottom - lineHeight)
+  document.body.removeChild(mirror)
+  return contentTop
+}
+
+function scrollEditorToLine(line: number) {
+  const textarea = textareaRef.value
+  if (!textarea) return
+  if (line <= 0) {
+    textarea.scrollTo({ top: 0, behavior: "smooth" })
+    return
+  }
+  const offsets = computeLineOffsets(rawMarkdown.value)
+  const charOffset = offsets[Math.min(line, offsets.length - 1)]
+  const top = measureOffsetTopInTextarea(
+    textarea,
+    rawMarkdown.value.slice(0, charOffset),
+    editorPaddingClass.value,
+  )
+  textarea.scrollTo({ top: Math.max(0, top - 16), behavior: "smooth" })
+}
+
+function handleTocSelect(id: string) {
+  activeHeadingId.value = id
+  if (!isEditing.value || editLayoutMode.value !== "edit") {
+    scrollToHeading(id)
+  }
+  if (isEditing.value && editLayoutMode.value !== "preview") {
+    const tocItem = toc.value.find((item) => item.id === id)
+    if (tocItem) {
+      scrollEditorToLine(tocItem.line)
+    }
+  }
+}
+
+function handleSearchClose() {
+  closeSearch({ focusEditor: true })
 }
 
 async function saveCurrentFile() {
@@ -856,11 +1040,38 @@ function handleKeyDown(event: KeyboardEvent) {
   }
 }
 
+let workspaceObserver: ResizeObserver | null = null
+let textareaObserver: ResizeObserver | null = null
+
+watch(textareaRef, (el) => {
+  if (textareaObserver) {
+    textareaObserver.disconnect()
+    textareaObserver = null
+  }
+  if (el && typeof ResizeObserver !== "undefined") {
+    updateEditorClientWidth()
+    textareaObserver = new ResizeObserver(() => {
+      updateEditorClientWidth()
+    })
+    textareaObserver.observe(el)
+  }
+})
+
 // ----------------------------------------------------
 // 14. 生命周期挂载
 // ----------------------------------------------------
 onMounted(() => {
   readRecentPaths()
+
+  if (workspaceRef.value && typeof ResizeObserver !== "undefined") {
+    workspaceWidth.value = workspaceRef.value.clientWidth
+    workspaceObserver = new ResizeObserver((entries) => {
+      for (const entry of entries) {
+        workspaceWidth.value = entry.contentRect.width
+      }
+    })
+    workspaceObserver.observe(workspaceRef.value)
+  }
 
   invoke<string[]>("opened_files")
     .then(loadFirstOpenedFile)
@@ -920,6 +1131,15 @@ onUnmounted(() => {
     unlistenDragDrop()
     unlistenDragDrop = null
   }
+  if (workspaceObserver) {
+    workspaceObserver.disconnect()
+    workspaceObserver = null
+  }
+  if (textareaObserver) {
+    textareaObserver.disconnect()
+    textareaObserver = null
+  }
+  if (selectionSyncRafId !== null) cancelAnimationFrame(selectionSyncRafId)
   if (noticeTimeoutId) clearTimeout(noticeTimeoutId)
   if (saveTimeoutId) clearTimeout(saveTimeoutId)
   window.removeEventListener("keydown", handleKeyDown)
@@ -1137,7 +1357,7 @@ onUnmounted(() => {
           @toggle-case-sensitive="toggleCaseSensitive"
           @next="handleSearchNext"
           @prev="handleSearchPrev"
-          @close="closeSearch"
+          @close="handleSearchClose"
         />
 
         <!-- 外部文件更新通知条 (Live Reload) -->
@@ -1149,7 +1369,7 @@ onUnmounted(() => {
         </div>
 
         <!-- 视图主体内容 -->
-        <div class="flex flex-1 min-h-0 relative overflow-hidden">
+        <div ref="workspaceRef" class="flex flex-1 min-h-0 relative overflow-hidden">
           <!-- 欢迎页空状态 -->
           <div
             v-if="!currentDocument"
@@ -1170,70 +1390,95 @@ onUnmounted(() => {
 
           <!-- 阅读与编辑视口 -->
           <template v-else>
-            <!-- 1. 编辑器区 -->
-            <div
-              v-if="isEditing && (editLayoutMode === 'split' || editLayoutMode === 'edit')"
-              :class="[
-                'flex flex-col h-full',
-                editLayoutMode === 'split' ? 'w-1/2 border-r border-border/50 bg-background' : 'w-full',
-              ]"
-            >
-              <textarea
-                class="flex-1 w-full p-6 md:p-10 resize-none font-mono text-sm leading-relaxed bg-transparent text-foreground focus:outline-none scroll-container"
-                v-model="rawMarkdown"
-                @input="onEditorInput"
-                @keydown.tab.prevent="handleTextareaTab"
-                @click="syncPreviewScroll"
-                @keyup="syncPreviewScroll"
-                placeholder="开始编写 Markdown..."
-                spellcheck="false"
-              ></textarea>
-            </div>
-
-            <!-- 2. 阅读主视图容器 (relative 独立隔离回到顶部按钮) -->
-            <div
-              v-if="!isEditing || editLayoutMode === 'split' || editLayoutMode === 'preview'"
-              :class="[
-                'relative flex-1 flex flex-col min-w-0 h-full overflow-hidden',
-                isEditing && editLayoutMode === 'split' ? 'w-1/2 bg-muted/5' : '',
-              ]"
-            >
+            <!-- 编辑与预览主区域（均分空间，不因右侧大纲挤压而失衡） -->
+            <div class="flex flex-1 min-w-0 h-full overflow-hidden">
+              <!-- 1. 编辑器区（带搜索背景高亮镜像层） -->
               <div
-                ref="previewContainerRef"
-                class="flex-1 overflow-y-auto scroll-container select-text relative"
-                @scroll="onContainerScroll"
+                v-if="isEditing && (editLayoutMode === 'split' || editLayoutMode === 'edit')"
+                :class="[
+                  'relative flex flex-col min-w-0 h-full overflow-hidden',
+                  editLayoutMode === 'split' ? 'flex-1 border-r border-border/50 bg-background' : 'w-full',
+                ]"
               >
-                <div class="max-w-none px-6 md:px-12 py-10 w-full">
-                  <article
-                    ref="articleRef"
-                    :class="[
-                      'prose prose-neutral max-w-none dark:prose-invert prose-headings:scroll-mt-20 prose-pre:rounded-xl prose-pre:border prose-pre:bg-muted/60 prose-pre:text-foreground prose-img:rounded-xl',
-                      isWideMode ? 'reading-mode-wide' : '',
-                    ]"
-                    :style="{ fontSize: `${fontSize}px` }"
-                    @click="handlePreviewClick"
-                    v-html="renderedMarkdown"
-                  />
+                <div
+                  v-if="editorBackdropHtml"
+                  ref="editorBackdropRef"
+                  aria-hidden="true"
+                  class="absolute inset-0 overflow-hidden pointer-events-none select-none"
+                >
+                  <div
+                    :style="editorClientWidth ? { width: `${editorClientWidth}px` } : undefined"
+                    :class="['editor-mirror-shared text-transparent', editorPaddingClass]"
+                    v-html="editorBackdropHtml"
+                  ></div>
                 </div>
+                <textarea
+                  ref="textareaRef"
+                  :class="[
+                    'relative z-10 flex-1 w-full resize-none editor-mirror-shared bg-transparent text-foreground focus:outline-none scroll-container',
+                    editorPaddingClass,
+                  ]"
+                  v-model="rawMarkdown"
+                  @input="onEditorInput"
+                  @scroll="onEditorScroll"
+                  @keydown.tab.prevent="handleTextareaTab"
+                  @click="handleEditorInteraction(true)"
+                  @keyup="handleEditorInteraction(true)"
+                  @mouseup="handleEditorInteraction(false)"
+                  @select="handleEditorInteraction(false)"
+                  placeholder="开始编写 Markdown..."
+                  spellcheck="false"
+                ></textarea>
               </div>
 
-              <!-- 回到顶部按钮：相对于阅读视口定位在右下角，绝不与 TOC 重叠 -->
-              <button
-                v-if="showBackToTop"
-                class="back-to-top-btn absolute bottom-6 right-6 z-30 size-9 rounded-full bg-primary/90 text-primary-foreground shadow-lg flex items-center justify-center hover:bg-primary cursor-pointer transition-all duration-200"
-                @click="scrollToTop"
-                title="回到顶部"
+              <!-- 2. 阅读主视图容器 (relative 独立隔离回到顶部按钮) -->
+              <div
+                v-if="!isEditing || editLayoutMode === 'split' || editLayoutMode === 'preview'"
+                :class="[
+                  'relative flex-1 flex flex-col min-w-0 h-full overflow-hidden',
+                  isEditing && editLayoutMode === 'split' ? 'bg-muted/5' : '',
+                ]"
               >
-                <ArrowUp class="size-4" />
-              </button>
+                <div
+                  ref="previewContainerRef"
+                  class="flex-1 overflow-y-auto scroll-container select-text relative"
+                  @scroll="onContainerScroll"
+                >
+                  <div :class="['max-w-none w-full', isSplitEdit ? 'px-5 md:px-8 py-8' : 'px-6 md:px-12 py-10']">
+                    <article
+                      ref="articleRef"
+                      :class="[
+                        'prose prose-neutral max-w-none dark:prose-invert prose-headings:scroll-mt-20 prose-pre:rounded-xl prose-pre:border prose-pre:bg-muted/60 prose-pre:text-foreground prose-img:rounded-xl',
+                        isWideMode ? 'reading-mode-wide' : '',
+                      ]"
+                      :style="{ fontSize: `${fontSize}px` }"
+                      @click="handlePreviewClick"
+                      v-html="renderedMarkdown"
+                    />
+                  </div>
+                </div>
+
+                <!-- 回到顶部按钮：相对于阅读视口定位在右下角，绝不与 TOC 重叠 -->
+                <button
+                  v-if="showBackToTop"
+                  class="back-to-top-btn absolute bottom-6 right-6 z-30 size-9 rounded-full bg-primary/90 text-primary-foreground shadow-lg flex items-center justify-center hover:bg-primary cursor-pointer transition-all duration-200"
+                  @click="scrollToTop"
+                  title="回到顶部"
+                >
+                  <ArrowUp class="size-4" />
+                </button>
+              </div>
             </div>
 
-            <!-- 3. 右侧大纲目录组件 -->
+            <!-- 3. 右侧大纲目录组件（编辑与阅读模式均可展示，窄屏分栏时自动切换浮层不挤压视口） -->
             <TocPanel
-              :is-open="isTocOpen && (!isEditing || editLayoutMode === 'preview')"
+              :is-open="isTocOpen"
               :toc="toc"
               :active-heading-id="activeHeadingId"
-              @select="scrollToHeading"
+              :compact="isTocCompact"
+              :overlay="isTocOverlay"
+              @select="handleTocSelect"
+              @close="isTocOpen = false"
             />
           </template>
         </div>

@@ -12,6 +12,7 @@ export interface TocItem {
   id: string
   text: string
   level: number
+  line: number
 }
 
 export interface MarkdownRenderResult {
@@ -180,9 +181,42 @@ renderer.core.ruler.push("source_map", (state: any) => {
   for (const token of state.tokens) {
     if (token.map && token.type !== "inline") {
       token.attrSet("data-line", String(token.map[0]))
+      token.attrSet("data-line-end", String(token.map[1]))
     }
   }
 })
+
+function injectSourceLineAttrs(html: string, token: Token): string {
+  if (!token.map) return html
+  const attrs = ` data-line="${token.map[0]}" data-line-end="${token.map[1]}"`
+  return html.replace(/^<(pre|div)(?=[\s>])/, `<$1${attrs}`)
+}
+
+const defaultFenceRule =
+  renderer.renderer.rules.fence ??
+  ((tokens: Token[], idx: number, options: Options, _env: any, self: Renderer) =>
+    self.renderToken(tokens, idx, options))
+
+renderer.renderer.rules.fence = (
+  tokens: Token[],
+  idx: number,
+  options: Options,
+  env: any,
+  self: Renderer,
+) => injectSourceLineAttrs(defaultFenceRule(tokens, idx, options, env, self), tokens[idx])
+
+const defaultCodeBlockRule =
+  renderer.renderer.rules.code_block ??
+  ((tokens: Token[], idx: number, options: Options, _env: any, self: Renderer) =>
+    self.renderToken(tokens, idx, options))
+
+renderer.renderer.rules.code_block = (
+  tokens: Token[],
+  idx: number,
+  options: Options,
+  env: any,
+  self: Renderer,
+) => injectSourceLineAttrs(defaultCodeBlockRule(tokens, idx, options, env, self), tokens[idx])
 
 // 5. 链接规则：外部网络链接新窗口打开，锚点和相对链接保持原样供应用内拦截
 const defaultLinkOpen =
@@ -272,6 +306,7 @@ export function renderMarkdown(source: string, docPath?: string): MarkdownRender
           id,
           text: titleText || `第 ${headingCount} 节`,
           level,
+          line: token.map ? token.map[0] : 0,
         })
       }
     }
@@ -308,6 +343,7 @@ export function renderMarkdown(source: string, docPath?: string): MarkdownRender
       "rel",
       "id",
       "data-line",
+      "data-line-end",
       "class",
       "type",
       "checked",

@@ -8,10 +8,13 @@ const props = defineProps<{
   isOpen: boolean
   toc: TocItem[]
   activeHeadingId: string | null
+  compact?: boolean
+  overlay?: boolean
 }>()
 
 const emit = defineEmits<{
   (e: "select", id: string): void
+  (e: "close"): void
 }>()
 
 const searchQuery = ref("")
@@ -56,17 +59,32 @@ function getPaddingClass(level: number) {
 <template>
   <aside
     :class="[
-      'shrink-0 border-l bg-muted/10 flex flex-col transition-all duration-300 ease-in-out h-full max-h-full overflow-hidden select-none',
-      isOpen ? 'w-[230px]' : 'w-0 border-l-0',
+      'shrink-0 border-l flex flex-col transition-all duration-300 ease-in-out h-full max-h-full overflow-hidden select-none',
+      overlay
+        ? 'absolute right-0 top-0 bottom-0 z-30 bg-background/95 backdrop-blur-md shadow-xl'
+        : 'bg-muted/10',
+      isOpen
+        ? (compact ? 'w-[196px]' : 'w-[230px]')
+        : 'w-0 border-l-0 pointer-events-none',
     ]"
   >
     <!-- 目录头部与快速过滤输入框 -->
     <div class="p-2.5 border-b space-y-2 shrink-0">
-      <div class="flex items-center justify-between">
+      <div class="flex items-center justify-between gap-1.5">
         <div class="text-xs font-semibold text-muted-foreground">大纲目录</div>
-        <Badge variant="outline" class="text-[10px] px-1.5 rounded-full py-0">
-          {{ filteredToc.length }}
-        </Badge>
+        <div class="flex items-center gap-1">
+          <Badge variant="outline" class="text-[10px] px-1.5 rounded-full py-0">
+            {{ filteredToc.length }}
+          </Badge>
+          <button
+            v-if="overlay"
+            @click="emit('close')"
+            class="size-5 rounded flex items-center justify-center text-muted-foreground hover:text-foreground hover:bg-muted transition cursor-pointer"
+            title="收起大纲"
+          >
+            <X class="size-3" />
+          </button>
+        </div>
       </div>
 
       <!-- 目录过滤框 -->
