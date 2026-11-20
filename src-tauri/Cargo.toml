@@ -1,6 +1,6 @@
 [package]
 name = "mzread"
-version = "0.5.0"
+version = "0.5.1"
 description = "A cross-platform Markdown reader built with Tauri and Vue."
 authors = ["mzhu"]
 edition = "2021"

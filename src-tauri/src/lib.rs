@@ -1,5 +1,5 @@
 use notify::{Config, Event, EventKind, RecommendedWatcher, RecursiveMode, Watcher};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use std::{
     collections::HashMap,
     fs,
@@ -14,6 +14,7 @@ use tauri::{Emitter, Manager, Runtime, Url, WebviewWindowBuilder};
 const MAX_MARKDOWN_BYTES: u64 = 10 * 1024 * 1024;
 const MAX_TRAY_RECENT_PATHS: usize = 8;
 const RECENT_PATHS_FILE: &str = "recent-files.json";
+const SETTINGS_FILE: &str = "settings.json";
 
 #[derive(Serialize)]
 struct MarkdownDocument {
@@ -24,9 +25,90 @@ struct MarkdownDocument {
     modified_ms: Option<u128>,
 }
 
+#[derive(Serialize, Deserialize, Clone, Debug, Default, PartialEq, Eq)]
+#[serde(default)]
+struct AppSettings {
+    show_tray_icon: bool,
+}
+
 struct OpenedFiles(Mutex<Vec<String>>);
 struct RecentPathsState(Mutex<Vec<String>>);
+struct AppSettingsState(Mutex<AppSettings>);
 struct FileWatcherState(Mutex<Option<RecommendedWatcher>>);
+
+fn settings_file<R: Runtime>(app: &tauri::AppHandle<R>) -> Result<PathBuf, String> {
+    app.path()
+        .app_config_dir()
+        .map(|dir| dir.join(SETTINGS_FILE))
+        .map_err(|err| format!("无法定位应用配置目录：{err}"))
+}
+
+fn load_settings_from_disk<R: Runtime>(app: &tauri::AppHandle<R>) -> AppSettings {
+    let Ok(path) = settings_file(app) else {
+        return AppSettings::default();
+    };
+
+    let Ok(content) = fs::read_to_string(path) else {
+        return AppSettings::default();
+    };
+
+    serde_json::from_str::<AppSettings>(&content).unwrap_or_default()
+}
+
+fn save_settings_to_disk<R: Runtime>(
+    app: &tauri::AppHandle<R>,
+    settings: &AppSettings,
+) -> Result<(), String> {
+    let path = settings_file(app)?;
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent).map_err(|err| format!("无法创建应用配置目录：{err}"))?;
+    }
+
+    let content = serde_json::to_string_pretty(settings)
+        .map_err(|err| format!("无法序列化应用配置：{err}"))?;
+    fs::write(path, content).map_err(|err| format!("无法保存应用配置：{err}"))
+}
+
+fn is_tray_visible<R: Runtime>(app: &tauri::AppHandle<R>) -> bool {
+    app.state::<AppSettingsState>()
+        .0
+        .lock()
+        .unwrap()
+        .show_tray_icon
+}
+
+fn sync_tray_visibility<R: Runtime>(
+    app: &tauri::AppHandle<R>,
+    visible: bool,
+) -> Result<(), String> {
+    if visible {
+        let paths = app.state::<RecentPathsState>().0.lock().unwrap().clone();
+        let menu = build_tray_menu(app, &paths)
+            .map_err(|err| format!("无法构建顶部菜单栏菜单：{err}"))?;
+
+        if let Some(tray) = app.tray_by_id("main") {
+            tray.set_menu(Some(menu))
+                .map_err(|err| format!("无法更新顶部菜单栏菜单：{err}"))?;
+            tray.set_visible(true)
+                .map_err(|err| format!("无法显示顶部菜单栏图标：{err}"))?;
+        } else {
+            let icon = app
+                .default_window_icon()
+                .cloned()
+                .ok_or_else(|| "缺少默认窗口图标".to_string())?;
+            TrayIconBuilder::with_id("main")
+                .icon(icon)
+                .menu(&menu)
+                .build(app)
+                .map_err(|err| format!("无法创建顶部菜单栏图标：{err}"))?;
+        }
+    } else if let Some(tray) = app.tray_by_id("main") {
+        tray.set_visible(false)
+            .map_err(|err| format!("无法隐藏顶部菜单栏图标：{err}"))?;
+    }
+
+    Ok(())
+}
 
 fn recent_paths_file<R: Runtime>(app: &tauri::AppHandle<R>) -> Result<PathBuf, String> {
     app.path()
@@ -280,8 +362,9 @@ fn build_tray_menu<R: Runtime>(
     menu.append(&sep1)?;
 
     // 5. 版本与作者署名 (置灰)
+    let version_label = format!("Version {}", env!("CARGO_PKG_VERSION"));
     let version_item =
-        MenuItem::with_id(app, "tray_version", "Version 0.3.0", false, None::<&str>)?;
+        MenuItem::with_id(app, "tray_version", version_label, false, None::<&str>)?;
     let author_item = MenuItem::with_id(
         app,
         "tray_author",
@@ -445,11 +528,32 @@ fn update_recent_paths(app: tauri::AppHandle, paths: Vec<String>) -> Result<(), 
     sync_recent_paths(&app, paths).map(|_| ())
 }
 
+#[tauri::command]
+fn get_tray_visible(app: tauri::AppHandle) -> bool {
+    is_tray_visible(&app)
+}
+
+#[tauri::command]
+fn set_tray_visible(app: tauri::AppHandle, visible: bool) -> Result<bool, String> {
+    sync_tray_visibility(&app, visible)?;
+
+    let updated = {
+        let state = app.state::<AppSettingsState>();
+        let mut lock = state.0.lock().unwrap();
+        lock.show_tray_icon = visible;
+        lock.clone()
+    };
+
+    save_settings_to_disk(&app, &updated)?;
+    Ok(visible)
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     let mut builder = tauri::Builder::default()
         .manage(OpenedFiles(Mutex::new(Vec::new())))
         .manage(RecentPathsState(Mutex::new(Vec::new())))
+        .manage(AppSettingsState(Mutex::new(AppSettings::default())))
         .manage(FileWatcherState(Mutex::new(None)));
 
     #[cfg(desktop)]
@@ -472,6 +576,8 @@ pub fn run() {
             recent_paths,
             exit_app,
             update_recent_paths,
+            get_tray_visible,
+            set_tray_visible,
             watch_file,
             unwatch_file
         ])
@@ -493,27 +599,32 @@ pub fn run() {
             }
         })
         .setup(|app| {
-            let icon = app
-                .default_window_icon()
-                .cloned()
-                .expect("缺少默认窗口图标");
+            let settings = load_settings_from_disk(app.handle());
+            {
+                let state = app.state::<AppSettingsState>();
+                let mut lock = state.0.lock().unwrap();
+                *lock = settings.clone();
+            }
+
             let recent_paths = load_recent_paths_from_disk(app.handle());
             {
                 let state = app.state::<RecentPathsState>();
                 let mut lock = state.0.lock().unwrap();
-                *lock = recent_paths.clone();
+                *lock = recent_paths;
             }
 
-            // 启动时直接从磁盘恢复托盘最近文档
-            let menu = build_tray_menu(app.handle(), &recent_paths)?;
-
-            let _tray = TrayIconBuilder::with_id("main")
-                .icon(icon)
-                .menu(&menu)
-                .build(app)?;
+            // 按配置决定启动时是否显示系统顶部菜单栏图标（默认隐藏）
+            if settings.show_tray_icon {
+                sync_tray_visibility(app.handle(), true).map_err(std::io::Error::other)?;
+            }
 
             // Windows 通过文件关联首次启动时只会传入命令行参数，不会触发 Opened 事件。
             emit_open_files(app.handle(), initial_markdown_paths());
+
+            // 未显示顶部菜单栏图标时直接打开主窗口，避免无入口可用
+            if !settings.show_tray_icon && app.get_webview_window("main").is_none() {
+                show_main_window(app.handle());
+            }
 
             Ok(())
         })
@@ -525,6 +636,13 @@ pub fn run() {
                 event: tauri::WindowEvent::CloseRequested { api, .. },
                 ..
             } if label == "main" => {
+                #[cfg(not(target_os = "macos"))]
+                if !is_tray_visible(app) {
+                    api.prevent_close();
+                    let _ = app.emit("request-exit", ());
+                    return;
+                }
+
                 api.prevent_close();
                 if let Some(window) = app.get_webview_window("main") {
                     let _ = window.hide();
@@ -549,4 +667,21 @@ pub fn run() {
             }
             _ => {}
         });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::AppSettings;
+
+    #[test]
+    fn app_settings_defaults_to_hidden_tray_icon() {
+        let defaults = AppSettings::default();
+        assert!(!defaults.show_tray_icon);
+
+        let from_empty: AppSettings = serde_json::from_str("{}").unwrap();
+        assert!(!from_empty.show_tray_icon);
+
+        let enabled: AppSettings = serde_json::from_str(r#"{"show_tray_icon": true}"#).unwrap();
+        assert!(enabled.show_tray_icon);
+    }
 }

@@ -22,6 +22,8 @@ import {
   Maximize2,
   Minimize2,
   List,
+  PanelTop,
+  PanelTopDashed,
 } from "@lucide/vue"
 import { Button } from "@/components/ui/button"
 import { Separator } from "@/components/ui/separator"
@@ -132,6 +134,8 @@ const recentFilesMetadata = ref<Record<string, number>>({})
 const isSidebarOpen = ref(true)
 const isTocOpen = ref(true)
 const isEditing = ref(false)
+const showTrayIcon = ref(false)
+const isTogglingTray = ref(false)
 const editLayoutMode = ref<"split" | "edit" | "preview">("split")
 const saveStatus = ref<"saved" | "saving" | "dirty" | "readonly">("saved")
 const saveError = ref("")
@@ -789,6 +793,20 @@ async function toggleEditMode() {
   }
 }
 
+async function toggleTrayIcon() {
+  if (isTogglingTray.value) return
+  isTogglingTray.value = true
+  try {
+    showTrayIcon.value = await invoke<boolean>("set_tray_visible", {
+      visible: !showTrayIcon.value,
+    })
+  } catch (error) {
+    errorMessage.value = toErrorMessage(error)
+  } finally {
+    isTogglingTray.value = false
+  }
+}
+
 // ----------------------------------------------------
 // 10. 文件加载与管理
 // ----------------------------------------------------
@@ -1062,6 +1080,12 @@ watch(textareaRef, (el) => {
 // ----------------------------------------------------
 onMounted(() => {
   readRecentPaths()
+
+  invoke<boolean>("get_tray_visible")
+    .then((visible) => {
+      showTrayIcon.value = visible
+    })
+    .catch(() => {})
 
   if (workspaceRef.value && typeof ResizeObserver !== "undefined") {
     workspaceWidth.value = workspaceRef.value.clientWidth
@@ -1343,6 +1367,23 @@ onUnmounted(() => {
               title="进入编辑模式 (⌘E)"
             >
               <Edit class="size-4" />
+            </Button>
+
+            <Separator orientation="vertical" class="h-4 mx-0.5" />
+
+            <!-- 顶部菜单栏图标显示开关 -->
+            <Button
+              variant="ghost"
+              size="icon"
+              :disabled="isTogglingTray"
+              :class="['size-8 cursor-pointer rounded-lg transition', showTrayIcon ? 'text-primary bg-primary/10' : 'text-muted-foreground hover:text-foreground']"
+              @click="toggleTrayIcon"
+              :title="showTrayIcon ? '隐藏顶部菜单栏图标' : '显示顶部菜单栏图标'"
+              :aria-label="showTrayIcon ? '隐藏顶部菜单栏图标' : '显示顶部菜单栏图标'"
+              :aria-pressed="showTrayIcon"
+            >
+              <PanelTop v-if="showTrayIcon" class="size-4" />
+              <PanelTopDashed v-else class="size-4" />
             </Button>
           </div>
         </header>
